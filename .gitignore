@@ -1,3 +1,7 @@
 /target
+/excel
+/report
 
 Cargo.lock
+*driver.exe
+**/*secret.*

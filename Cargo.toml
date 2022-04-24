@@ -6,3 +6,30 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+thirtyfour = "0.28.3"
+umya-spreadsheet = "0.7.0"
+
+chrono = "0.4.19"
+dialoguer = "0.10.0"
+
+anyhow = "1.0.56"
+tracing = "0.1.33"
+
+tokio-stream = "0.1.8"
+futures-util = "0.3.21"
+
+[dependencies.regex]
+version = "1.5.5"
+features = ["pattern"]
+
+[dependencies.tracing-subscriber]
+version = "0.3.11"
+features = ["env-filter"]
+
+[dependencies.clap]
+version = "3.1.8"
+features = ["derive"]
+
+[dependencies.tokio]
+version = "1.17.0"
+features = ["full"]
