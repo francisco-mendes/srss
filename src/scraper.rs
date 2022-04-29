@@ -12,6 +12,7 @@ use anyhow::{
 use regex::Regex;
 use thirtyfour::{
     prelude::*,
+    query::StringMatch,
     OptionRect,
 };
 use tokio::{
@@ -20,7 +21,6 @@ use tokio::{
         Command,
     },
     sync::mpsc::Sender,
-    time::sleep,
 };
 use tracing::instrument;
 
@@ -52,7 +52,7 @@ pub async fn scrape(
         let mut driver = WebDriver::new_with_timeout(
             &format!("http://localhost:{}/srss", args.port),
             settings,
-            Some(Duration::from_secs(30)),
+            Some(Duration::from_secs(60)),
         )
         .await
         .with_context(|| "unable to create webdriver")?;
@@ -173,10 +173,13 @@ async fn scrape_inner(
             .with_context(|| "unable to list power stations")?;
 
         for station in stations {
-            let records = export_report(driver, &station)
-                .await
-                .with_context(|| format!("unable to extract report for station {}", station))?;
-            report_sink.send(Report { station, records }).await?;
+            match export_report(driver, &station).await {
+                Ok(records) => report_sink.send(Report { station, records }).await?,
+                Err(err) => {
+                    tracing::error!(%station.id, %station.name, "unable to extract report, skipping station");
+                    eprintln!("Error: {:?}", err);
+                }
+            };
         }
     }
 }
@@ -232,12 +235,12 @@ async fn list_stations(driver: &mut WebDriver) -> anyhow::Result<Vec<Station>> {
     const NEXT_PAGE_SELECTOR: By = By::ClassName("ant-pagination-next");
 
     const STATION_LINK_REGEX: &str = include_str!("stationlink.secret.txt");
+
     let href_match = Regex::new(STATION_LINK_REGEX).unwrap();
     try {
         let mut stations = Vec::with_capacity(128);
 
         tracing::trace!("waiting for site to load");
-        sleep(Duration::from_secs(3)).await;
         driver
             .query(CLOSE_TOAST_SELECTOR)
             .and_clickable()
@@ -245,7 +248,7 @@ async fn list_stations(driver: &mut WebDriver) -> anyhow::Result<Vec<Station>> {
             .await?
             .click()
             .await?;
-        tracing::trace!("closing login toast");
+        tracing::trace!("closed login toast");
 
         loop {
             tracing::trace!("searching for stations in page");
@@ -290,7 +293,7 @@ async fn list_stations(driver: &mut WebDriver) -> anyhow::Result<Vec<Station>> {
 
             tracing::debug!("advancing to next page");
             next.click().await?;
-            sleep(Duration::from_millis(1000)).await
+            wait_for_table_reload(driver).await?;
         }
 
         tracing::info!(total = stations.len(), "all stations found");
@@ -333,43 +336,33 @@ async fn export_report(driver: &mut WebDriver, station: &Station) -> Result<Vec<
             .await?;
         driver.refresh().await?;
 
-        tracing::trace!("setting time period");
-        driver
-            .query(TIME_DROPDOWN_SELECTOR)
-            .single()
-            .await?
-            .click()
-            .await?;
-        sleep(Duration::from_millis(500)).await;
-
-        tracing::trace!("picking monthly data");
-        driver
-            .query(MONTH_OPTION_SELECTOR)
-            .single()
-            .await?
-            .click()
-            .await?;
-        sleep(Duration::from_millis(500)).await;
-
-        tracing::trace!("setting page size period");
+        tracing::debug!("setting page size");
         driver
             .query(PAGE_DROPDOWN_SELECTOR)
             .single()
             .await?
             .click()
             .await?;
-        sleep(Duration::from_millis(500)).await;
 
-        tracing::trace!("showing entire month");
+        tracing::trace!("picking 50 records per page");
+        let size_opt = driver.query(ALL_OPTION_SELECTOR).single().await?;
+        size_opt.wait_until().clickable().await?;
+        size_opt.click().await?;
+
+        tracing::debug!("setting time granularity");
         driver
-            .query(ALL_OPTION_SELECTOR)
+            .query(TIME_DROPDOWN_SELECTOR)
             .single()
             .await?
             .click()
             .await?;
-        sleep(Duration::from_millis(500)).await;
 
-        tracing::debug!("scanning for monthly records");
+        tracing::trace!("picking monthly granularity");
+        let table_opt = driver.query(MONTH_OPTION_SELECTOR).single().await?;
+        table_opt.wait_until().clickable().await?;
+        table_opt.click().await?;
+
+        wait_for_table_reload(driver).await?;
 
         tracing::trace!("scanning for dates");
         let dates = driver.query(DATE_SELECTOR).all().await?;
@@ -377,7 +370,12 @@ async fn export_report(driver: &mut WebDriver, station: &Station) -> Result<Vec<
         tracing::trace!("scanning for yields");
         let yields = driver.query(YIELD_SELECTOR).all().await?;
 
-        anyhow::ensure!(dates.len() == yields.len(), "malformed report table");
+        anyhow::ensure!(
+            dates.len() == yields.len(),
+            "malformed report table: found {} date cells and {} yield cells",
+            dates.len(),
+            yields.len()
+        );
         tracing::trace!(count = dates.len(), "found records");
 
         let mut data = Vec::with_capacity(dates.len());
@@ -392,7 +390,22 @@ async fn export_report(driver: &mut WebDriver, station: &Station) -> Result<Vec<
             data.push(Record { date, pv_yield })
         }
 
-        tracing::info!("station scraped");
+        tracing::debug!("station scraped");
         data
+    }
+}
+
+async fn wait_for_table_reload(driver: &mut WebDriver) -> Result<()> {
+    const WAITER_SELECTOR: By = By::ClassName("ant-spin-container");
+
+    try {
+        tracing::trace!("waiting for table reload");
+        driver
+            .query(WAITER_SELECTOR)
+            .single()
+            .await?
+            .wait_until()
+            .lacks_class(StringMatch::new("ant-spin-blur").partial())
+            .await?
     }
 }
