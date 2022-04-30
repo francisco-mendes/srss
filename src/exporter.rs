@@ -21,7 +21,7 @@ use tracing::instrument;
 use crate::{
     cli::{
         ExportArgs,
-        ExportType,
+        ExportFormat,
     },
     model::{
         Record,
@@ -40,17 +40,17 @@ where
 
 pub async fn export(out: ExportArgs, rx: Receiver<Report>) -> Result<()> {
     try {
-        match out.export {
-            ExportType::Values => {
+        match out.format {
+            ExportFormat::Values => {
                 export_to_file(out.destination, "txt", rx, to_line(Record::to_value)).await?
             }
-            ExportType::Log => {
+            ExportFormat::Log => {
                 export_to_file(out.destination, "log", rx, to_line(Record::to_string)).await?
             }
-            ExportType::Csv => {
+            ExportFormat::Csv => {
                 export_to_file(out.destination, "csv", rx, to_line(Record::to_csv)).await?
             }
-            ExportType::Edit => {
+            ExportFormat::Edit => {
                 todo!()
             }
         }

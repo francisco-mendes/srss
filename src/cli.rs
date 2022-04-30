@@ -9,9 +9,9 @@ use tracing::instrument;
 
 /// Solar Report Scraping Software
 ///
-/// SRSS scrapes data from a web dashboard containing telemetry for solar power installations and
-/// stores it into the excel file for later use.
+/// SRSS scrapes data from a web dashboard containing telemetry for solar power installations.
 #[derive(Parser)]
+#[clap(author, version, about)]
 pub struct CliArgs {
     #[clap(flatten)]
     pub driver: DriverArgs,
@@ -44,14 +44,14 @@ pub struct DriverArgs {
 #[derive(Args)]
 pub struct ExportArgs {
     /// How to export the data
-    #[clap(arg_enum, short = 't', long = "type", default_value = "values")]
-    pub export: ExportType,
+    #[clap(arg_enum, short = 'f', long = "format", default_value = "values")]
+    pub format: ExportFormat,
     #[clap(short, long = "dest", default_value = "report/")]
     pub destination: PathBuf,
 }
 
 #[derive(ArgEnum, Eq, PartialEq, Copy, Clone, Debug)]
-pub enum ExportType {
+pub enum ExportFormat {
     #[clap(name = "values")]
     Values,
     #[clap(name = "log")]
