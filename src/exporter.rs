@@ -71,7 +71,7 @@ where
         let _ = fs::remove_dir_all(&directory).await;
         fs::create_dir_all(&directory)
             .await
-            .with_context(|| "Unable to create output directory")?;
+            .context("Unable to create output directory")?;
         tracing::debug!("created output directory");
 
         ReceiverStream::new(rx)
@@ -87,7 +87,7 @@ where
             .map(|out| out.map_err(Error::new).flatten())
             .try_collect::<()>()
             .await
-            .with_context(|| "error writing station reports")?;
+            .context("error writing station reports")?;
         tracing::debug!("all station reports written");
     }
 }

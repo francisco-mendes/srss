@@ -11,7 +11,8 @@ use tracing::instrument;
 ///
 /// SRSS scrapes data from a web dashboard containing telemetry for solar power installations.
 #[derive(Parser)]
-#[clap(author, version, about)]
+#[clap(version, about)]
+#[clap(author = "Francisco Mendes <francisco.a.mendes.98@gmail.com>")]
 pub struct CliArgs {
     #[clap(flatten)]
     pub driver: DriverArgs,
@@ -19,6 +20,12 @@ pub struct CliArgs {
     pub credentials: CredentialArgs,
     #[clap(flatten)]
     pub output: ExportArgs,
+    /// Which month's data to scrape (format: YYYY-MM) (e.g.: 2021-04)
+    #[clap(short, long)]
+    pub month: Option<String>,
+    /// Tells the logger how verbose to be
+    #[clap(long = "log", env = "RUST_LOG", default_value = "srss=info")]
+    pub log_filter: String,
 }
 
 #[derive(Args)]
@@ -44,7 +51,7 @@ pub struct DriverArgs {
 #[derive(Args)]
 pub struct ExportArgs {
     /// How to export the data
-    #[clap(arg_enum, short = 'f', long = "format", default_value = "values")]
+    #[clap(arg_enum, default_value = "log")]
     pub format: ExportFormat,
     #[clap(short, long = "dest", default_value = "report/")]
     pub destination: PathBuf,

@@ -60,7 +60,7 @@ impl Display for Record {
 impl Record {
     fn fmt_yield(&self) -> Cow<'static, str> {
         self.pv_yield
-            .map_or(Cow::from("--"), |v| v.to_string().into())
+            .map_or(Cow::from("0"), |v| v.to_string().into())
     }
 
     pub fn to_value(&self) -> String {

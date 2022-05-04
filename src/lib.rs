@@ -23,10 +23,9 @@ pub use self::{
     scraper::scrape,
 };
 
-pub fn task_context<T, C, F>(ctx: F) -> impl FnOnce(Result<Result<T>, JoinError>) -> Result<T>
+pub fn task_context<T, C>(ctx: C) -> impl FnOnce(Result<Result<T>, JoinError>) -> Result<T>
 where
     C: Display + Send + Sync + 'static,
-    F: FnOnce() -> C,
 {
-    |res| res.map_err(Error::new).flatten().with_context(ctx)
+    |res| res.map_err(Error::new).flatten().context(ctx)
 }

@@ -1,14 +1,12 @@
 [package]
-authors = ["francisco.a.mendes.98@gmail.com"]
 name = "srss"
-version = "1.0.0"
+version = "2.0.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 thirtyfour = "0.28.3"
-umya-spreadsheet = "0.7.0"
 
 chrono = "0.4.19"
 dialoguer = "0.10.0"
@@ -29,7 +27,7 @@ features = ["env-filter"]
 
 [dependencies.clap]
 version = "3.1.8"
-features = ["derive"]
+features = ["derive", "env"]
 
 [dependencies.tokio]
 version = "1.17.0"
