@@ -1,7 +1,10 @@
 /target
 /excel
 /report
+/out
+/src/bin
 
 Cargo.lock
 *driver.exe
 **/*secret.*
+**/*.xlsx

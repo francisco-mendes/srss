@@ -16,16 +16,20 @@ def export_to_excel(report_dir: str, excel_dirs: [str]):
     Reads the report files and writes each of them into the excel sheets.
     Assumes that the reports are from this month.
     """
+    app: xl.App
     with xl.App(add_book=False) as app:
         for station, excel_path in report_sheets(excel_dirs):
-            report_path = Path(report_dir) / f'{station}.log'
-            station = report_path.stem
+            try:
+                report_path = Path(report_dir) / f'{station}.log'
+                station = report_path.stem
 
-            wait_or_timeout(random.randint(60, 150))
-            print('processing', station)
+                wait_or_timeout(random.randint(60, 90))
+                print('processing', station)
 
-            records = read_report(report_path)
-            write_report(app, excel_path, list(records))
+                records = read_report(report_path)
+                write_report(app, excel_path, list(records))
+            except FileNotFoundError:
+                print('no report found for station', station)
 
 
 def wait_or_timeout(timeout: int = 5):
@@ -77,6 +81,7 @@ def write_report(app: xl.App, excel_path: Path, records: [tuple[Date, float]]):
         sheet[row, column].value = value
 
     wb.save(excel_path)
+    wb.close()
 
 
 def to_float(value: str) -> Union[float | None]:

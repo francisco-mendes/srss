@@ -105,7 +105,7 @@ async fn assert_driver_compatible(args: &DriverArgs) -> Result<()> {
         let browser_version = browser_version
             .matches(&major_version_regex)
             .next()
-            .context("webdriver version not found")?;
+            .context("browser version not found")?;
         tracing::trace!(version = %browser_version);
 
         anyhow::ensure!(
