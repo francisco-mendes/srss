@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
 use clap::{
-    ArgEnum,
     Args,
     Parser,
+    ValueEnum,
 };
 use tracing::instrument;
 
@@ -14,50 +14,50 @@ use tracing::instrument;
 #[clap(version, about)]
 #[clap(author = "Francisco Mendes <francisco.a.mendes.98@gmail.com>")]
 pub struct CliArgs {
-    #[clap(flatten)]
+    #[command(flatten)]
     pub driver: DriverArgs,
-    #[clap(flatten)]
+    #[command(flatten)]
     pub credentials: CredentialArgs,
-    #[clap(flatten)]
+    #[command(flatten)]
     pub output: ExportArgs,
     /// Which month's data to scrape (format: YYYY-MM) (e.g.: 2021-04)
-    #[clap(short, long)]
+    #[arg(short, long)]
     pub month: Option<String>,
     /// Tells the logger how verbose to be
-    #[clap(long = "log", env = "RUST_LOG", default_value = "srss=info")]
+    #[arg(long = "log", env = "RUST_LOG", default_value = "srss=info")]
     pub log_filter: String,
 }
 
 #[derive(Args)]
 pub struct CredentialArgs {
     /// Username/Email to login
-    #[clap(long = "user")]
+    #[arg(long = "user")]
     pub username: Option<String>,
     /// Password to login
-    #[clap(long = "pass")]
+    #[arg(long = "pass")]
     pub password: Option<String>,
 }
 
 #[derive(Args)]
 pub struct DriverArgs {
     /// Path to the web driver executable
-    #[clap(short, long = "exe", default_value = "./chromedriver.exe")]
+    #[arg(short, long = "exe", default_value = "./chromedriver.exe")]
     pub executable: PathBuf,
     /// Port to run the driver at
-    #[clap(short, long, default_value = "4444")]
+    #[arg(short, long, default_value = "4444")]
     pub port: u16,
 }
 
 #[derive(Args)]
 pub struct ExportArgs {
     /// How to export the data
-    #[clap(arg_enum, default_value = "log")]
+    #[arg(value_enum, default_value = "log")]
     pub format: ExportFormat,
-    #[clap(short, long = "dest", default_value = "report/")]
+    #[arg(short, long = "dest", default_value = "report/")]
     pub destination: PathBuf,
 }
 
-#[derive(ArgEnum, Eq, PartialEq, Copy, Clone, Debug)]
+#[derive(ValueEnum, Eq, PartialEq, Copy, Clone, Debug)]
 pub enum ExportFormat {
     #[clap(name = "values")]
     Values,

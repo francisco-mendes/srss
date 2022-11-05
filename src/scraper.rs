@@ -2,6 +2,7 @@ use std::{
     self,
     iter,
     process::Stdio,
+    thread,
     time::Duration,
 };
 
@@ -10,11 +11,7 @@ use anyhow::{
     Result,
 };
 use regex::Regex;
-use thirtyfour::{
-    prelude::*,
-    query::StringMatch,
-    OptionRect,
-};
+use thirtyfour::prelude::*;
 use tokio::{
     process::{
         Child,
@@ -34,7 +31,14 @@ use crate::{
         Report,
         Station,
     },
+    scraper::components::{
+        ControlForm,
+        Login,
+        Pagination,
+    },
 };
+
+mod components;
 
 #[instrument(skip_all)]
 pub async fn scrape(
@@ -49,17 +53,14 @@ pub async fn scrape(
         let mut process = spawn_webdriver(&args).await?;
 
         let mut settings = DesiredCapabilities::chrome();
-        settings.set_headless()?;
-        let mut driver = WebDriver::new_with_timeout(
-            &format!("http://localhost:{}/srss", args.port),
-            settings,
-            Some(Duration::from_secs(60)),
-        )
-        .await
-        .context("unable to create webdriver")?;
+        settings.unset_headless()?;
+        let mut driver = WebDriver::new(&format!("http://localhost:{}", args.port), settings)
+            .await
+            .context("unable to create webdriver")?;
         driver
-            .set_window_rect(OptionRect::new().with_size(1920, 1080))
-            .await?;
+            .set_window_rect(0, 0, 1920, 1080)
+            .await
+            .context("unable to set windows size")?;
         tracing::debug!("webdriver initialized");
 
         scrape_inner(&mut driver, month, credentials, report_sink).await?;
@@ -138,7 +139,7 @@ async fn spawn_webdriver(args: &DriverArgs) -> Result<Child> {
         tracing::trace!("spawning new webdriver process");
 
         let process = Command::new(&args.executable)
-            .args([&format!("--port={}", args.port), "--url-base=srss"])
+            .args([&format!("--port={}", args.port)])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .creation_flags(0x08000000)
@@ -162,36 +163,76 @@ async fn scrape_inner(
     report_sink: Sender<Report>,
 ) -> Result<()> {
     try {
-        login_to_dashboard(driver, &credentials)
+        driver
+            .goto(include_str!("loginpage.secret.txt"))
             .await
-            .context("unable to login")?;
-        let mut stations = list_stations(driver)
-            .await
-            .context("unable to list power stations")?;
+            .context("failed to go to login page")?;
 
-        stations.sort_unstable_by(|a, b| a.name.cmp(&b.name));
-        for station in stations {
-            let mut counter = 10;
-            loop {
-                let err = match export_report(driver, month.as_deref(), &station).await {
-                    Ok(records) => {
-                        report_sink.send(Report { station, records }).await?;
-                        break;
-                    }
-                    Err(err) => err,
-                };
-                tracing::error!(%station.id, %station.name, "failed to extract report");
-                if counter == 0 {
-                    anyhow::bail!(err);
-                } else {
-                    eprintln!("Error: {:?}", err);
-                    counter -= 1;
-                }
-            }
-        }
+        Login::query(driver)
+            .await?
+            .login(driver, credentials)
+            .await?;
+
+        tracing::trace!("waiting for site to load");
+        let _: Result<_> = try {
+            driver
+                .query(By::Id("login_info_win_close"))
+                .and_clickable()
+                .single()
+                .await?
+                .click()
+                .await?;
+        };
+        tracing::trace!("closed login toast");
+
+        driver
+            .goto(include_str!("reportpage.secret.txt"))
+            .await
+            .context("failed to go to report page")?;
+
+        let control = ControlForm::query(driver).await?;
+        control.set_data_period(driver, month).await?;
+
+        Pagination::query(driver)
+            .await?
+            .increase_page_size(driver)
+            .await?;
+
+        thread::sleep(Duration::from_secs(10000));
+
+        // let mut stations = list_stations(driver)
+        //     .await
+        //     .context("unable to list power stations")?;
+        //
+        // stations.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+        // for station in stations {
+        //     let mut counter = 10;
+        //     loop {
+        //         let err = match export_report(driver, month.as_deref(), &station).await {
+        //             Ok(records) => {
+        //                 report_sink.send(Report { station, records }).await?;
+        //                 break;
+        //             }
+        //             Err(err) => err,
+        //         };
+        //         tracing::error!(%station.id, %station.name, "failed to extract report");
+        //         if counter == 0 {
+        //             anyhow::bail!(err);
+        //         } else {
+        //             eprintln!("Error: {:?}", err);
+        //             counter -= 1;
+        //         }
+        //     }
+
+        ()
     }
 }
 
+fn wait_for_page_load(driver: &WebDriver) -> Result<()> {
+    Ok(())
+}
+
+/*
 #[instrument(skip_all)]
 async fn login_to_dashboard(driver: &mut WebDriver, credentials: &Credentials) -> Result<()> {
     const LOGIN_PAGE: &str = include_str!("loginpage.secret.txt");
@@ -200,7 +241,7 @@ async fn login_to_dashboard(driver: &mut WebDriver, credentials: &Credentials) -
     const LOGIN_BUTTON_SELECTOR: By = By::Id("submitDataverify");
     try {
         tracing::trace!("entering login page");
-        driver.get(LOGIN_PAGE).await?;
+
 
         tracing::debug!("searching for login form");
         let user_input = driver
@@ -320,8 +361,9 @@ async fn export_report(
     const REPORT_PAGE_TEMPLATE: &str = include_str!("reportpage.secret.txt");
 
     // language=Xpath
-    const TIME_DROPDOWN_SELECTOR: By =
-        By::XPath(r#"// *[@class="nco-site-search-bar"] // *[@class="ant-select-selection-item"]"#);
+    const TIME_DROPDOWN_SELECTOR: By = By::XPath(
+        r#"// form[@class="ant-form ant-form-inline"] // *[@class="ant-select-selection-item"]"#,
+    );
     // language=Xpath
     const PAGE_DROPDOWN_SELECTOR: By = By::XPath(
         r#"// *[@class="ant-pagination-options"] // *[@class="ant-select-selection-item"]"#,
@@ -336,148 +378,134 @@ async fn export_report(
         r#"// tbody[@class="ant-table-tbody"] / tr[contains(@class, 'ant-table-row')] / td[2]"#,
     );
 
-    try {
-        tracing::debug!("accessing reports");
-        driver
-            .get(format!("{}{}", REPORT_PAGE_TEMPLATE, station.id))
-            .await
-            .context("failed to go to report page")?;
-        driver
-            .refresh()
-            .await
-            .context("failed to refresh report page")?;
-
-        tracing::debug!("setting time granularity");
-        driver
-            .query(TIME_DROPDOWN_SELECTOR)
-            .single()
-            .await
-            .map_err(|_| anyhow::anyhow!("time granularity dropdown not found"))?
-            .click()
-            .await
-            .map_err(|_| anyhow::anyhow!("unable to click on time granularity dropdown"))?;
-
-        tracing::trace!("picking monthly granularity");
-        driver
-            .action_chain()
-            .send_keys(Keys::Down)
-            .send_keys(Keys::Enter)
-            .perform()
-            .await
-            .map_err(|_| anyhow::anyhow!("unable to select monthly time granularity"))?;
-
-        tracing::debug!("setting page size");
-        driver
-            .query(PAGE_DROPDOWN_SELECTOR)
-            .single()
-            .await
-            .map_err(|_| anyhow::anyhow!("pagination dropdown not found"))?
-            .click()
-            .await
-            .map_err(|_| anyhow::anyhow!("failed to click on pagination dropdown"))?;
-
-        tracing::trace!("picking page size");
-        driver
-            .action_chain()
-            .send_keys(Keys::Down)
-            .send_keys(Keys::Down)
-            .send_keys(Keys::Down)
-            .send_keys(Keys::Enter)
-            .perform()
-            .await
-            .map_err(|_| anyhow::anyhow!("unable to select max page size"))?;
-
-        if let Some(month) = month {
-            let time = driver
-                .query(By::Id("statisticTime"))
-                .single()
-                .await
-                .map_err(|_| anyhow::anyhow!("unable to find period setter"))?;
-
-            driver
-                .action_chain()
-                .click_element(&time)
-                .key_down(Keys::Control)
-                .send_keys('a')
-                .key_up(Keys::Control)
-                .send_keys(Keys::Backspace)
-                .send_keys(month)
-                .send_keys(Keys::Enter)
-                .perform()
-                .await
-                .map_err(|_| anyhow::anyhow!("unable to set the month"))?;
-        }
-        wait_for_table_reload(driver)
-            .await
-            .context("unable to wait for table to reload")?;
-
-        tracing::trace!("scanning for dates");
-        let dates = driver
-            .query(DATE_SELECTOR)
-            .all()
-            .await
-            .map_err(|_| anyhow::anyhow!("unable to find dates"))?;
-
-        tracing::trace!("scanning for yields");
-        let yields = driver
-            .query(YIELD_SELECTOR)
-            .all()
-            .await
-            .map_err(|_| anyhow::anyhow!("unable to find yields"))?;
-
-        anyhow::ensure!(
-            dates.len() == yields.len(),
-            "malformed report table: found {} date cells and {} yield cells",
-            dates.len(),
-            yields.len()
-        );
-        tracing::trace!(count = dates.len(), "found records");
-
-        let mut data = Vec::with_capacity(dates.len());
-
-        for (date, pv_yield) in iter::zip(dates, yields) {
-            tracing::trace!("processing record");
-
-            let date = date
-                .text()
-                .await
-                .map_err(|_| anyhow::anyhow!("date is invalid"))?;
-            let pv_yield = pv_yield
-                .text()
-                .await
-                .map_err(|_| anyhow::anyhow!("yield is invalid"))?
-                .parse()
-                .ok();
-
-            if let Some(month) = month {
-                anyhow::ensure!(
-                    date.contains(month),
-                    "got data for the wrong month: {} in not in {}",
-                    date,
-                    month
-                );
-            }
-
-            tracing::trace!(%date, "yield" = ?pv_yield, "added record");
-            data.push(Record { date, pv_yield })
-        }
-
-        tracing::debug!("station scraped");
-        data
-    }
+    // try {
+    //     tracing::debug!("accessing reports");
+    //     driver
+    //         .get(format!("{}{}", REPORT_PAGE_TEMPLATE, station.id))
+    //         .await
+    //         .context("failed to go to report page")?;
+    //     driver
+    //         .refresh()
+    //         .await
+    //         .context("failed to refresh report page")?;
+    //
+    //     tracing::debug!("setting time granularity");
+    //     driver
+    //         .query(TIME_DROPDOWN_SELECTOR)
+    //         .single()
+    //         .await
+    //         .map_err(|_| anyhow::anyhow!("time granularity dropdown not found"))?
+    //         .click()
+    //         .await
+    //         .map_err(|_| anyhow::anyhow!("unable to click on time granularity dropdown"))?;
+    //
+    //     tracing::trace!("picking monthly granularity");
+    //     driver
+    //         .action_chain()
+    //         .send_keys(Keys::Down)
+    //         .send_keys(Keys::Enter)
+    //         .perform()
+    //         .await
+    //         .map_err(|_| anyhow::anyhow!("unable to select monthly time granularity"))?;
+    //
+    //     tracing::debug!("setting page size");
+    //     driver
+    //         .query(PAGE_DROPDOWN_SELECTOR)
+    //         .single()
+    //         .await
+    //         .map_err(|_| anyhow::anyhow!("pagination dropdown not found"))?
+    //         .click()
+    //         .await
+    //         .map_err(|_| anyhow::anyhow!("failed to click on pagination dropdown"))?;
+    //
+    //     tracing::trace!("picking page size");
+    //     driver
+    //         .action_chain()
+    //         .send_keys(Keys::Down)
+    //         .send_keys(Keys::Down)
+    //         .send_keys(Keys::Down)
+    //         .send_keys(Keys::Enter)
+    //         .perform()
+    //         .await
+    //         .map_err(|_| anyhow::anyhow!("unable to select max page size"))?;
+    //
+    //     if let Some(month) = month {
+    //         let time = driver
+    //             .query(By::Id("statisticTime"))
+    //             .single()
+    //             .await
+    //             .map_err(|_| anyhow::anyhow!("unable to find period setter"))?;
+    //
+    //         driver
+    //             .action_chain()
+    //             .click_element(&time)
+    //             .key_down(Keys::Control)
+    //             .send_keys('a')
+    //             .key_up(Keys::Control)
+    //             .send_keys(Keys::Backspace)
+    //             .send_keys(month)
+    //             .send_keys(Keys::Enter)
+    //             .perform()
+    //             .await
+    //             .map_err(|_| anyhow::anyhow!("unable to set the month"))?;
+    //     }
+    //     wait_for_table_reload(driver)
+    //         .await
+    //         .context("unable to wait for table to reload")?;
+    //
+    //     tracing::trace!("scanning for dates");
+    //     let dates = driver
+    //         .query(DATE_SELECTOR)
+    //         .all()
+    //         .await
+    //         .map_err(|_| anyhow::anyhow!("unable to find dates"))?;
+    //
+    //     tracing::trace!("scanning for yields");
+    //     let yields = driver
+    //         .query(YIELD_SELECTOR)
+    //         .all()
+    //         .await
+    //         .map_err(|_| anyhow::anyhow!("unable to find yields"))?;
+    //
+    //     anyhow::ensure!(
+    //         dates.len() == yields.len(),
+    //         "malformed report table: found {} date cells and {} yield cells",
+    //         dates.len(),
+    //         yields.len()
+    //     );
+    //     tracing::trace!(count = dates.len(), "found records");
+    //
+    //     let mut data = Vec::with_capacity(dates.len());
+    //
+    //     for (date, pv_yield) in iter::zip(dates, yields) {
+    //         tracing::trace!("processing record");
+    //
+    //         let date = date
+    //             .text()
+    //             .await
+    //             .map_err(|_| anyhow::anyhow!("date is invalid"))?;
+    //         let pv_yield = pv_yield
+    //             .text()
+    //             .await
+    //             .map_err(|_| anyhow::anyhow!("yield is invalid"))?
+    //             .parse()
+    //             .ok();
+    //
+    //         if let Some(month) = month {
+    //             anyhow::ensure!(
+    //                 date.contains(month),
+    //                 "got data for the wrong month: {} in not in {}",
+    //                 date,
+    //                 month
+    //             );
+    //         }
+    //
+    //         tracing::trace!(%date, "yield" = ?pv_yield, "added record");
+    //         data.push(Record { date, pv_yield })
+    //     }
+    //
+    //     tracing::debug!("station scraped");
+    //     data
+    // }
 }
-
-async fn wait_for_table_reload(driver: &mut WebDriver) -> Result<()> {
-    const WAITER_SELECTOR: By = By::ClassName("ant-spin-container");
-
-    try {
-        tracing::trace!("waiting for table reload");
-        driver
-            .query(WAITER_SELECTOR)
-            .single()
-            .await?
-            .wait_until()
-            .lacks_class(StringMatch::new("ant-spin-blur").partial())
-            .await?
-    }
-}
+*/
