@@ -1,3 +1,5 @@
+use std::ops::ControlFlow;
+
 use anyhow::{
     Context,
     Result,
@@ -8,14 +10,20 @@ use thirtyfour::{
         ElementResolver,
     },
     error::WebDriverResult,
-    prelude::ElementQueryable,
+    prelude::{
+        ElementQueryable,
+        WebDriverError,
+    },
     By,
     Key,
     WebDriver,
     WebElement,
 };
 
-use crate::cli::Credentials;
+use crate::{
+    cli::Credentials,
+    scraper::retry_loop,
+};
 
 #[derive(Debug, Clone, Component)]
 pub struct Login {
@@ -47,17 +55,17 @@ impl Login {
         try {
             let user_input = self
                 .username
-                .resolve()
+                .resolve_present()
                 .await
                 .context("unable to find username input")?;
             let pass_input = self
                 .password
-                .resolve()
+                .resolve_present()
                 .await
                 .context("unable to find password input")?;
             let login_button = self
                 .login
-                .resolve()
+                .resolve_present()
                 .await
                 .context("unable to find login button")?;
             driver
@@ -80,7 +88,7 @@ pub struct ControlForm {
         id = "site-report-nco-tree-select-customized",
         description = "plant selector"
     )]
-    plants: ElementResolver<WebElement>,
+    plants: ElementResolver<StationTree>,
     #[by(id = "timeDimension", description = "time granularity selector")]
     granularity: ElementResolver<WebElement>,
     #[by(id = "statisticTime", description = "time period selector")]
@@ -91,7 +99,7 @@ pub struct ControlForm {
 
 impl ControlForm {
     pub async fn query(driver: &WebDriver) -> Result<Self> {
-        try {
+        retry_loop("finding control bar", || async {
             // language=Css
             let selector: By = By::Css("form.ant-form.ant-form-inline");
             let element = driver
@@ -99,74 +107,103 @@ impl ControlForm {
                 .and_displayed()
                 .and_enabled()
                 .single()
-                .await
-                .context("failed to find control bar")?;
-            Self::new(element)
-        }
+                .await?;
+            Ok(ControlFlow::Break(Self::new(element)))
+        })
+        .await
+        .context("failed to find control bar")
     }
 
     pub async fn set_data_period(&self, driver: &WebDriver, month: Option<String>) -> Result<()> {
-        try {
-            loop {
-                let granularity = self
-                    .granularity
-                    .resolve()
-                    .await
-                    .context("failed to find time granularity input")?;
+        retry_loop("setting data time granularity", || async {
+            tracing::trace!("querying granularity selector");
+            let granularity = self.granularity.resolve().await?;
 
+            tracing::trace!("setting monthly granularity");
+            driver
+                .action_chain()
+                .send_keys_to_element(&granularity, Key::Down + Key::Enter)
+                .perform()
+                .await?;
+
+            tracing::trace!("checking if granularity is set successfully");
+            // language=Css
+            let selector = By::Css("span[title=Monthly]");
+            let _ = self.form.query(selector).and_displayed().single().await?;
+
+            tracing::trace!("set data time granularity");
+            Ok(ControlFlow::BREAK)
+        })
+        .await
+        .context("setting time granularity to monthly")?;
+
+        if let Some(month) = month.as_deref() {
+            retry_loop("setting time period", || async {
+                let time_period = self.time_period.resolve_present().await?;
                 driver
                     .action_chain()
-                    .send_keys_to_element(&granularity, Key::Down + Key::Enter)
+                    .click_element(&time_period)
+                    .key_down(Key::Control)
+                    .send_keys("a")
+                    .key_up(Key::Control)
+                    .send_keys(Key::Backspace + month + Key::Enter)
                     .perform()
-                    .await
-                    .context("unable to select monthly granularity")?;
+                    .await?;
 
-                if granularity
-                    .attr("aria-activedescendant")
-                    .await
-                    .context("missing granularity value")?
+                if self
+                    .time_period
+                    .resolve_present()
+                    .await?
+                    .value()
+                    .await?
                     .unwrap_or_default()
-                    == "timeDimension_list_1"
+                    == month
                 {
-                    tracing::trace!("set data time granularity");
-                    break;
+                    tracing::trace!("set data time period");
+                    Ok(ControlFlow::BREAK)
                 } else {
-                    tracing::warn!("unable to set data time granularity, retrying...");
+                    Ok(ControlFlow::CONTINUE)
                 }
-            }
+            })
+            .await
+            .context("failed to set data time period")?
+        }
+        Ok(())
+    }
 
-            if let Some(month) = month.as_deref() {
-                loop {
-                    let time_period = self
-                        .time_period
-                        .resolve()
-                        .await
-                        .context("unable to find time input")?;
-                    driver
-                        .action_chain()
-                        .click_element(&time_period)
-                        .key_down(Key::Control)
-                        .send_keys("a")
-                        .key_up(Key::Control)
-                        .send_keys(Key::Backspace + month + Key::Enter)
-                        .perform()
-                        .await
-                        .context("unable to set month")?;
+    pub async fn stations(&self) -> Result<Vec<StationLine>> {
+        try {
+            self.plants
+                .resolve()
+                .await
+                .context("failed to find station tree")?
+                .stations()
+                .await?
+        }
+    }
 
-                    if time_period
-                        .value()
-                        .await
-                        .context("missing time period value")?
-                        .unwrap_or_default()
-                        == month
-                    {
-                        tracing::trace!("set data time period");
-                        break;
-                    } else {
-                        tracing::warn!("unable to set data time period, retrying...");
-                    }
-                }
-            }
+    pub async fn click_stations(&self) -> Result<()> {
+        try {
+            self.plants
+                .resolve_present()
+                .await
+                .context("failed to find station input")?
+                .base
+                .click()
+                .await
+                .context("failed to click on station input")?
+        }
+    }
+
+    pub async fn click_search(&self) -> Result<()> {
+        try {
+            self.search
+                .resolve_present()
+                .await
+                .context("failed to find search button")?
+                .click()
+                .await
+                .context("failed to click on search button")?
         }
     }
 }
@@ -184,7 +221,7 @@ pub struct Pagination {
 
 impl Pagination {
     pub async fn query(driver: &WebDriver) -> Result<Self> {
-        try {
+        retry_loop("finding pagination controls", || async {
             // language=Css
             let selector: By = By::Css(".ant-pagination-options");
             let element = driver
@@ -192,44 +229,119 @@ impl Pagination {
                 .and_displayed()
                 .and_enabled()
                 .single()
-                .await
-                .context("failed to find pagination form")?;
-            Self::new(element)
-        }
+                .await?;
+            Ok(ControlFlow::Break(Self::new(element)))
+        })
+        .await
+        .context("failed to find pagination controls")
     }
 
     pub async fn increase_page_size(&self, driver: &WebDriver) -> Result<()> {
-        try {
-            loop {
-                let page_size = self
-                    .page_size
-                    .resolve()
-                    .await
-                    .context("failed to find pagination input")?;
+        retry_loop("increasing page size", || async {
+            let page_size = self.page_size.resolve_present().await?;
+            driver
+                .action_chain()
+                .send_keys_to_element(&page_size, Key::Down + Key::Down + Key::Down + Key::Enter)
+                .perform()
+                .await?;
 
-                driver
-                    .action_chain()
-                    .send_keys_to_element(
-                        &page_size,
-                        Key::Down + Key::Down + Key::Down + Key::Enter,
-                    )
-                    .perform()
-                    .await
-                    .context("failed to set table page size to 50")?;
-
-                if page_size
-                    .attr("aria-activedescendant")
-                    .await
-                    .context("missing granularity value")?
-                    .unwrap_or_default()
-                    == "rc_select_3_list_3"
-                {
-                    tracing::trace!("set table page size");
-                    break;
-                } else {
-                    tracing::warn!("unable to set table page size, retrying...");
-                }
+            if self
+                .form
+                .query(By::Css(".ant-select-selection-item"))
+                .and_displayed()
+                .single()
+                .await?
+                .attr("title")
+                .await?
+                .unwrap_or_default()
+                == "50 / page"
+            {
+                tracing::trace!("set table page size");
+                Ok(ControlFlow::BREAK)
+            } else {
+                Ok(ControlFlow::CONTINUE)
             }
+        })
+        .await
+        .context("setting page size")
+    }
+}
+
+#[derive(Debug, Clone, Component)]
+pub struct StationTree {
+    #[base]
+    base: WebElement,
+    #[by(css = "li > .flex-node-line", description = "stations")]
+    stations: ElementResolver<Vec<StationLine>>,
+}
+
+impl StationTree {
+    pub async fn stations(&self) -> Result<Vec<StationLine>> {
+        self.stations
+            .resolve_present()
+            .await
+            .context("failed to find stations")
+    }
+}
+
+#[derive(Debug, Clone, Component)]
+pub struct StationLine {
+    #[base]
+    line: WebElement,
+    #[by(nowait, css = ".anticon.tree-icon", description = "station directory")]
+    caret: ElementResolver<WebElement>,
+    #[by(css = "input.node-line-checkbox", description = "station checkbox")]
+    checkbox: ElementResolver<WebElement>,
+    #[by(css = ".flex-node-line-name-part", description = "station name")]
+    station_name: ElementResolver<WebElement>,
+}
+
+impl StationLine {
+    pub async fn station_name(&self) -> String {
+        let result: Result<String> = try {
+            self.station_name
+                .resolve_present()
+                .await
+                .context("failed to find line name")?
+                .attr("title")
+                .await
+                .context("failed to find station name")?
+                .context("missing station name")?
+        };
+        match result {
+            Ok(name) => name,
+            Err(err) => {
+                tracing::warn!("unable to find station name: {err}");
+                String::from("<missing>")
+            }
+        }
+    }
+
+    pub async fn is_dir(&self) -> Result<bool> {
+        match self.caret.resolve_present().await {
+            Err(WebDriverError::NoSuchElement(_)) => Ok(false),
+            Ok(_) => Ok(true),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    pub async fn click(&self) -> Result<()> {
+        let name = self.station_name().await;
+
+        match self.caret.resolve_present().await {
+            Ok(caret) => caret
+                .click()
+                .await
+                .with_context(|| format!("unable to open station directory '{name}'")),
+            Err(WebDriverError::NoSuchElement(_)) => self
+                .checkbox
+                .resolve_present()
+                .await
+                .with_context(|| format!("unable to find checkbox for station '{name}'"))?
+                .click()
+                .await
+                .with_context(|| format!("unable to click station '{name}'")),
+            Err(err) => Err(err.into()),
         }
     }
 }

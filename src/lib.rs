@@ -1,5 +1,6 @@
 #![feature(try_blocks)]
 #![feature(result_flattening)]
+#![feature(control_flow_enum)]
 
 extern crate core;
 

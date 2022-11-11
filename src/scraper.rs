@@ -1,7 +1,12 @@
 use std::{
     self,
+    future::Future,
     iter,
-    process::Stdio,
+    ops::ControlFlow,
+    process::{
+        Output,
+        Stdio,
+    },
     thread,
     time::Duration,
 };
@@ -57,6 +62,10 @@ pub async fn scrape(
         let mut driver = WebDriver::new(&format!("http://localhost:{}", args.port), settings)
             .await
             .context("unable to create webdriver")?;
+        driver
+            .set_implicit_wait_timeout(Duration::from_secs(5))
+            .await
+            .context("unable to set implicit timeout")?;
         driver
             .set_window_rect(0, 0, 1920, 1080)
             .await
@@ -190,13 +199,53 @@ async fn scrape_inner(
             .await
             .context("failed to go to report page")?;
 
-        let control = ControlForm::query(driver).await?;
-        control.set_data_period(driver, month).await?;
+        let control = ControlForm::query(driver)
+            .await
+            .context("unable to find page controls")?;
+        control
+            .set_data_period(driver, month.clone())
+            .await
+            .with_context(|| format!("setting data period '{month:?}'"))?;
 
         Pagination::query(driver)
-            .await?
+            .await
+            .context("unable to find pagination controls")?
             .increase_page_size(driver)
-            .await?;
+            .await
+            .context("unable to increase page size")?;
+
+        control
+            .click_stations()
+            .await
+            .context("unable to open station dropdown")?;
+
+        for station in control
+            .stations()
+            .await
+            .context("unable to list stations")?
+        {
+            let name = station.station_name().await;
+            let true = station.is_dir().await? else { continue };
+            tracing::trace!(name, "processing station");
+            // station
+            //     .click()
+            //     .await
+            //     .with_context(|| format!("unable to select station '{name}'"))?;
+            // control
+            //     .click_search()
+            //     .await
+            //     .context("unable to search for station data")?;
+            //
+            // thread::sleep(Duration::from_secs(1));
+            // control
+            //     .click_stations()
+            //     .await
+            //     .context("unable to open station dropdown")?;
+            // station
+            //     .click()
+            //     .await
+            //     .with_context(|| format!("unable to deselect station '{name}'",))?;
+        }
 
         thread::sleep(Duration::from_secs(10000));
 
@@ -223,13 +272,30 @@ async fn scrape_inner(
         //             counter -= 1;
         //         }
         //     }
-
-        ()
     }
 }
 
-fn wait_for_page_load(driver: &WebDriver) -> Result<()> {
-    Ok(())
+async fn retry_loop<T, Fut>(op_desc: &'static str, retry_op: impl Fn() -> Fut) -> Result<T>
+where
+    Fut: Future<Output = WebDriverResult<ControlFlow<T>>>,
+{
+    for _ in 0..10 {
+        return try {
+            match retry_op().await {
+                Err(WebDriverError::NoSuchElement(cause)) => {
+                    tracing::warn!("retrying operation: {}: {}", op_desc, cause);
+                    continue;
+                }
+                Ok(ControlFlow::Continue(_)) => {
+                    tracing::warn!("retrying operation: {}", op_desc);
+                    continue;
+                }
+                Err(err) => Err(err),
+                Ok(ControlFlow::Break(val)) => Ok(val),
+            }?
+        };
+    }
+    anyhow::bail!("retry limit reached, aborting operation")
 }
 
 /*
