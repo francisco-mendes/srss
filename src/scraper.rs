@@ -12,8 +12,7 @@ use anyhow::{
 use regex::Regex;
 use thirtyfour::{
     prelude::*,
-    query::StringMatch,
-    OptionRect,
+    stringmatch::StringMatch,
 };
 use tokio::{
     process::{
@@ -50,16 +49,10 @@ pub async fn scrape(
 
         let mut settings = DesiredCapabilities::chrome();
         settings.set_headless()?;
-        let mut driver = WebDriver::new_with_timeout(
-            &format!("http://localhost:{}/srss", args.port),
-            settings,
-            Some(Duration::from_secs(60)),
-        )
-        .await
-        .context("unable to create webdriver")?;
-        driver
-            .set_window_rect(OptionRect::new().with_size(1920, 1080))
-            .await?;
+        let mut driver = WebDriver::new(&format!("http://localhost:{}/srss", args.port), settings)
+            .await
+            .context("unable to create webdriver")?;
+        driver.set_window_rect(0, 0, 1920, 1080).await?;
         tracing::debug!("webdriver initialized");
 
         scrape_inner(&mut driver, month, credentials, report_sink).await?;
@@ -138,7 +131,7 @@ async fn spawn_webdriver(args: &DriverArgs) -> Result<Child> {
         tracing::trace!("spawning new webdriver process");
 
         let process = Command::new(&args.executable)
-            .args([&format!("--port={}", args.port), "--url-base=srss"])
+            .args([&format!("--port={}", args.port), "--url-base", "srss"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .creation_flags(0x08000000)
@@ -194,29 +187,25 @@ async fn scrape_inner(
 
 #[instrument(skip_all)]
 async fn login_to_dashboard(driver: &mut WebDriver, credentials: &Credentials) -> Result<()> {
-    const LOGIN_PAGE: &str = include_str!("loginpage.secret.txt");
-    const USER_INPUT_SELECTOR: By = By::Id("username");
-    const PASS_INPUT_SELECTOR: By = By::Id("value");
-    const LOGIN_BUTTON_SELECTOR: By = By::Id("submitDataverify");
     try {
         tracing::trace!("entering login page");
-        driver.get(LOGIN_PAGE).await?;
+        driver.goto(include_str!("loginpage.secret.txt")).await?;
 
         tracing::debug!("searching for login form");
         let user_input = driver
-            .query(USER_INPUT_SELECTOR)
+            .query(By::Id("username"))
             .and_clickable()
             .single()
             .await
             .context("unable to find user input")?;
         let pass_input = driver
-            .query(PASS_INPUT_SELECTOR)
+            .query(By::Id("value"))
             .and_clickable()
             .single()
             .await
             .context("unable to find password input")?;
         let login_btn = driver
-            .query(LOGIN_BUTTON_SELECTOR)
+            .query(By::Id("submitDataverify"))
             .and_clickable()
             .single()
             .await
@@ -237,21 +226,15 @@ async fn login_to_dashboard(driver: &mut WebDriver, credentials: &Credentials) -
 }
 
 #[instrument(skip_all)]
-async fn list_stations(driver: &mut WebDriver) -> anyhow::Result<Vec<Station>> {
-    const CLOSE_TOAST_SELECTOR: By = By::Id("login_info_win_close");
-    const STATION_LINK_SELECTOR: By = By::XPath(r"// tr / td[3] // a");
-    const NEXT_PAGE_SELECTOR: By = By::ClassName("ant-pagination-next");
-
-    const STATION_LINK_REGEX: &str = include_str!("stationlink.secret.txt");
-
-    let href_match = Regex::new(STATION_LINK_REGEX).unwrap();
+async fn list_stations(driver: &mut WebDriver) -> Result<Vec<Station>> {
+    let href_match = Regex::new(include_str!("stationlink.secret.txt")).unwrap();
     try {
         let mut stations = Vec::with_capacity(128);
 
         tracing::trace!("waiting for site to load");
         let _: Result<_> = try {
             driver
-                .query(CLOSE_TOAST_SELECTOR)
+                .query(By::Id("login_info_win_close"))
                 .and_clickable()
                 .single()
                 .await?
@@ -263,14 +246,15 @@ async fn list_stations(driver: &mut WebDriver) -> anyhow::Result<Vec<Station>> {
         loop {
             tracing::trace!("searching for stations in page");
 
-            let links = driver.query(STATION_LINK_SELECTOR).all_required().await?;
+            let station_link_path = By::XPath(r"// tr / td[3] // a");
+            let links = driver.query(station_link_path).all_required().await?;
 
             tracing::trace!("processing stations");
             for link in &links {
                 let name = link.text().await?;
 
                 let href = link
-                    .get_attribute("href")
+                    .attr("href")
                     .await
                     .context("missing link in station name")?
                     .context("link is not a string")?;
@@ -290,7 +274,10 @@ async fn list_stations(driver: &mut WebDriver) -> anyhow::Result<Vec<Station>> {
                 "stations processed"
             );
 
-            let next = driver.query(NEXT_PAGE_SELECTOR).single().await?;
+            let next = driver
+                .query(By::ClassName("ant-pagination-next"))
+                .single()
+                .await?;
 
             if next
                 .class_name()
@@ -317,29 +304,11 @@ async fn export_report(
     month: Option<&str>,
     station: &Station,
 ) -> Result<Vec<Record>> {
-    const REPORT_PAGE_TEMPLATE: &str = include_str!("reportpage.secret.txt");
-
-    // language=Xpath
-    const TIME_DROPDOWN_SELECTOR: By =
-        By::XPath(r#"// *[@class="nco-site-search-bar"] // *[@class="ant-select-selection-item"]"#);
-    // language=Xpath
-    const PAGE_DROPDOWN_SELECTOR: By = By::XPath(
-        r#"// *[@class="ant-pagination-options"] // *[@class="ant-select-selection-item"]"#,
-    );
-
-    // language=Xpath
-    const DATE_SELECTOR: By = By::XPath(
-        r#"// tbody[@class="ant-table-tbody"] / tr[contains(@class, 'ant-table-row')] / td[1]"#,
-    );
-    // language=Xpath
-    const YIELD_SELECTOR: By = By::XPath(
-        r#"// tbody[@class="ant-table-tbody"] / tr[contains(@class, 'ant-table-row')] / td[2]"#,
-    );
-
     try {
         tracing::debug!("accessing reports");
+        let station_report_url = format!(include_str!("reportpage.secret.txt"), station.id);
         driver
-            .get(format!("{}{}", REPORT_PAGE_TEMPLATE, station.id))
+            .goto(station_report_url)
             .await
             .context("failed to go to report page")?;
         driver
@@ -348,8 +317,9 @@ async fn export_report(
             .context("failed to refresh report page")?;
 
         tracing::debug!("setting time granularity");
+        let granularity_selector_path = By::Css(".ant-select-selection-item[title='Daily']");
         driver
-            .query(TIME_DROPDOWN_SELECTOR)
+            .query(granularity_selector_path)
             .single()
             .await
             .map_err(|_| anyhow::anyhow!("time granularity dropdown not found"))?
@@ -360,15 +330,15 @@ async fn export_report(
         tracing::trace!("picking monthly granularity");
         driver
             .action_chain()
-            .send_keys(Keys::Down)
-            .send_keys(Keys::Enter)
+            .send_keys(Key::Down + Key::Enter)
             .perform()
             .await
             .map_err(|_| anyhow::anyhow!("unable to select monthly time granularity"))?;
 
         tracing::debug!("setting page size");
+        let pagination_path = By::Css(".ant-select-selection-item[title='10 / page']");
         driver
-            .query(PAGE_DROPDOWN_SELECTOR)
+            .query(pagination_path)
             .single()
             .await
             .map_err(|_| anyhow::anyhow!("pagination dropdown not found"))?
@@ -379,10 +349,7 @@ async fn export_report(
         tracing::trace!("picking page size");
         driver
             .action_chain()
-            .send_keys(Keys::Down)
-            .send_keys(Keys::Down)
-            .send_keys(Keys::Down)
-            .send_keys(Keys::Enter)
+            .send_keys(Key::Up + Key::Up + Key::Enter)
             .perform()
             .await
             .map_err(|_| anyhow::anyhow!("unable to select max page size"))?;
@@ -397,12 +364,10 @@ async fn export_report(
             driver
                 .action_chain()
                 .click_element(&time)
-                .key_down(Keys::Control)
-                .send_keys('a')
-                .key_up(Keys::Control)
-                .send_keys(Keys::Backspace)
-                .send_keys(month)
-                .send_keys(Keys::Enter)
+                .key_down(Key::Control)
+                .send_keys("a")
+                .key_up(Key::Control)
+                .send_keys(Key::Backspace + month + Key::Enter)
                 .perform()
                 .await
                 .map_err(|_| anyhow::anyhow!("unable to set the month"))?;
@@ -412,15 +377,21 @@ async fn export_report(
             .context("unable to wait for table to reload")?;
 
         tracing::trace!("scanning for dates");
+        let dates_path = By::XPath(
+            r#"// tbody[@class="ant-table-tbody"] / tr[contains(@class, 'ant-table-row')] / td[1]"#,
+        );
         let dates = driver
-            .query(DATE_SELECTOR)
+            .query(dates_path)
             .all()
             .await
             .map_err(|_| anyhow::anyhow!("unable to find dates"))?;
 
         tracing::trace!("scanning for yields");
+        let yields_path = By::XPath(
+            r#"// tbody[@class="ant-table-tbody"] / tr[contains(@class, 'ant-table-row')] / td[2]"#,
+        );
         let yields = driver
-            .query(YIELD_SELECTOR)
+            .query(yields_path)
             .all()
             .await
             .map_err(|_| anyhow::anyhow!("unable to find yields"))?;
@@ -468,12 +439,10 @@ async fn export_report(
 }
 
 async fn wait_for_table_reload(driver: &mut WebDriver) -> Result<()> {
-    const WAITER_SELECTOR: By = By::ClassName("ant-spin-container");
-
     try {
         tracing::trace!("waiting for table reload");
         driver
-            .query(WAITER_SELECTOR)
+            .query(By::ClassName("ant-spin-container"))
             .single()
             .await?
             .wait_until()

@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
 use clap::{
-    ArgEnum,
     Args,
     Parser,
+    ValueEnum,
 };
 use tracing::instrument;
 
@@ -51,13 +51,13 @@ pub struct DriverArgs {
 #[derive(Args)]
 pub struct ExportArgs {
     /// How to export the data
-    #[clap(arg_enum, default_value = "log")]
+    #[clap(value_enum, default_value = "log")]
     pub format: ExportFormat,
     #[clap(short, long = "dest", default_value = "report/")]
     pub destination: PathBuf,
 }
 
-#[derive(ArgEnum, Eq, PartialEq, Copy, Clone, Debug)]
+#[derive(ValueEnum, Eq, PartialEq, Copy, Clone, Debug)]
 pub enum ExportFormat {
     #[clap(name = "values")]
     Values,
@@ -65,8 +65,6 @@ pub enum ExportFormat {
     Log,
     #[clap(name = "csv")]
     Csv,
-    #[clap(name = "edit")]
-    Edit,
 }
 
 #[derive(Args)]

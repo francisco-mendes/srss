@@ -29,8 +29,6 @@ use crate::{
     },
 };
 
-mod excel {}
-
 fn to_line<F>(format: F) -> impl Fn(&Record) -> String + Clone + Send + Sync + 'static
 where
     F: Fn(&Record) -> String + Clone + Send + Sync + 'static,
@@ -49,9 +47,6 @@ pub async fn export(out: ExportArgs, rx: Receiver<Report>) -> Result<()> {
             }
             ExportFormat::Csv => {
                 export_to_file(out.destination, "csv", rx, to_line(Record::to_csv)).await?
-            }
-            ExportFormat::Edit => {
-                todo!()
             }
         }
     }

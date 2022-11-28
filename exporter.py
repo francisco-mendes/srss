@@ -1,12 +1,10 @@
 from datetime import date as Date
-import time
-import random
 import sys
-import msvcrt
 from pathlib import Path
 from typing import Union, Iterator
 import xlwings as xl
 import re
+from pytimedinput import timedInput
 
 sheet_name: str = open('sheet_name.secret.txt', encoding='utf-8').readline()
 
@@ -23,24 +21,15 @@ def export_to_excel(report_dir: str, excel_dirs: [str]):
                 report_path = Path(report_dir) / f'{station}.log'
                 station = report_path.stem
 
-                wait_or_timeout(random.randint(60, 90))
-                print('processing', station)
-
-                records = read_report(report_path)
-                write_report(app, excel_path, list(records))
+                process, timeout = timedInput(f"Process station {station}? [Y/n]:", timeout=120)
+                if timeout or process.startswith(('Y', 'y')):
+                    print('processing', station)
+                    records = read_report(report_path)
+                    write_report(app, excel_path, list(records))
+                else:
+                    print('skipping', station)
             except FileNotFoundError:
                 print('no report found for station', station)
-
-
-def wait_or_timeout(timeout: int = 5):
-    start = time.time()
-    while True:
-        if msvcrt.kbhit():
-            msvcrt.getch()
-            break
-        elif time.time() - start > timeout:
-            break
-        time.sleep(0.5)
 
 
 def report_sheets(excel_dirs: [str]) -> Iterator[tuple[str, Path]]:

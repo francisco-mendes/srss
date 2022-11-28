@@ -18,7 +18,7 @@ Requires:
 ## Build
 To install xlwings run this, possibly using pip from a virtual environment rather than a global one:
 ```sh
-pip install xlwings
+pip install xlwings pytimedinput
 ```
 
 To build the project run:
@@ -27,22 +27,26 @@ cargo b --release
 ```
 This will create a `srss` executable in `target\release`.
 
-## Running
+## Running the scraper
 ```sh
 cargo b --release
-```
-or with the executable:
-```sh
+# or using the executable:
 .\srss
 ```
 
 For a help message use:
 ```sh
 cargo b --release -- -h
-```
-or with the executable:
-```sh
+# or using the executable:
 .\srss -h
 ```
-
 The options and arguments required should be shown by the help message.
+
+## Running the exporter
+```
+python exporter.py <report-dir> <excel-dir1> <excel-dir2>...
+```
+Example:
+```sh
+python exporter.py report/ out_dir/ 
+```
